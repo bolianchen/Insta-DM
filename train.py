@@ -44,6 +44,11 @@ import pdb
 parser = argparse.ArgumentParser(description='Learning Monocular Depth in Dynamic Scenes via Instance-Aware Projection Consistency (KITTI and CityScapes)',
                                  formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 parser.add_argument('data', metavar='DIR', help='path to dataset')
+parser.add_argument(
+        '--data_file_structure', type=str, default='', choices=['', 'custom'],
+        help ='how training data are organized: '
+              'leave it an empty string to use the official Insta-DM format'
+              'set it custom to apply the custom format adopted by this fork')
 parser.add_argument('--with-gt', action='store_true', help='use ground truth for validation. You need to store it in npy 2D arrays see data/kitti_raw_loader.py for an example')
 parser.add_argument('--sequence-length', type=int, metavar='N', help='sequence length for training', default=3)
 parser.add_argument('-mni', type=int, help='maximum number of instances', default=20)
@@ -95,13 +100,19 @@ parser.add_argument('--no-shuffle', action='store_true', help='feed data without
 parser.add_argument('--no-input-aug', action='store_true', help='feed data without augmentation')
 parser.add_argument('--begin-idx', type=int, default=None, help='beginning index for pre-processed data')
 
+parser.add_argument(
+        '--use_data_parallel', action='store_true',
+        help='whether to use torch.nn.DataParallel to wrap networks')
 
 
 best_error = -1
 n_iter = 0
 device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
-device_val = torch.device("cuda:1") if torch.cuda.is_available() else torch.device("cpu")
-
+device_count = torch.cuda.device_count()
+if device_count >= 2:
+    device_val = torch.device("cuda:1") if torch.cuda.is_available() else torch.device("cpu")
+else:
+    device_val = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
 
 def main():
@@ -109,6 +120,7 @@ def main():
 
     global best_error, n_iter, device
     args = parser.parse_args()
+    args.use_data_parallel = args.use_data_parallel and device_count >= 2
 
     timestamp = datetime.datetime.now().strftime("%m-%d-%H:%M")
     if args.debug_mode:
@@ -145,6 +157,7 @@ def main():
     print("=> fetching scenes from '{}'".format(args.data))
     train_set = SequenceFolder(
         root=args.data,
+        file_structure = args.data_file_structure,
         train=True,
         seed=args.seed,
         shuffle=not(args.no_shuffle),
@@ -163,6 +176,7 @@ def main():
     else:
         val_set = SequenceFolder(
             root=args.data,
+            file_structure = args.data_file_structure,
             train=False,
             seed=args.seed,
             shuffle=not(args.no_shuffle),
@@ -192,21 +206,21 @@ def main():
 
     if args.pretrained_ego_pose:
         print("=> using pre-trained weights for EgoPoseNet")
-        weights = torch.load(args.pretrained_ego_pose)
+        weights = torch.load(args.pretrained_ego_pose, map_location=device)
         ego_pose_net.load_state_dict(weights['state_dict'], strict=False)
     else:
         ego_pose_net.init_weights()
 
     if args.pretrained_obj_pose:
         print("=> using pre-trained weights for ObjPoseNet")
-        weights = torch.load(args.pretrained_obj_pose)
+        weights = torch.load(args.pretrained_obj_pose, map_location=device)
         obj_pose_net.load_state_dict(weights['state_dict'], strict=False)
     else:
         obj_pose_net.init_weights()
 
     if args.pretrained_disp:
         print("=> using pre-trained weights for DispNet")
-        weights = torch.load(args.pretrained_disp)
+        weights = torch.load(args.pretrained_disp, map_location=device)
         if args.resnet_pretrained:
             disp_net.load_state_dict(weights, strict=False)
         else:
@@ -215,17 +229,23 @@ def main():
         disp_net.init_weights()
 
     cudnn.benchmark = True
-    disp_net = torch.nn.DataParallel(disp_net)
-    ego_pose_net = torch.nn.DataParallel(ego_pose_net)
-    obj_pose_net = torch.nn.DataParallel(obj_pose_net)
+    if args.use_data_parallel:
+        disp_net = torch.nn.DataParallel(disp_net)
+        ego_pose_net = torch.nn.DataParallel(ego_pose_net)
+        obj_pose_net = torch.nn.DataParallel(obj_pose_net)
 
     print('=> setting adam solver')
 
     optim_params = []
     if args.disp_lr != 0:
-        optim_params.append({'params': disp_net.module.encoder.parameters(), 'lr': args.disp_lr})
-        optim_params.append({'params': disp_net.module.decoder.parameters(), 'lr': args.disp_lr})
-        optim_params.append({'params': disp_net.module.obj_height_prior, 'lr': args.disp_lr * 0.1})
+        if args.use_data_parallel:
+            optim_params.append({'params': disp_net.module.encoder.parameters(), 'lr': args.disp_lr})
+            optim_params.append({'params': disp_net.module.decoder.parameters(), 'lr': args.disp_lr})
+            optim_params.append({'params': disp_net.module.obj_height_prior, 'lr': args.disp_lr * 0.1})
+        else:
+            optim_params.append({'params': disp_net.encoder.parameters(), 'lr': args.disp_lr})
+            optim_params.append({'params': disp_net.decoder.parameters(), 'lr': args.disp_lr})
+            optim_params.append({'params': disp_net.obj_height_prior, 'lr': args.disp_lr * 0.1})
     if args.ego_lr != 0:
         optim_params.append({'params': ego_pose_net.parameters(), 'lr': args.ego_lr})
     if args.obj_lr != 0:
@@ -296,13 +316,13 @@ def main():
             args.save_freq,
             args.save_path, {
                 'epoch': epoch + 1,
-                'state_dict': disp_net.module.state_dict()
+                'state_dict': disp_net.module.state_dict() if args.use_data_paralle else disp_net.state_dict()
             }, {
                 'epoch': epoch + 1,
-                'state_dict': ego_pose_net.module.state_dict()
+                'state_dict': ego_pose_net.module.state_dict() if args.use_data_parallel else ego_pose_net.state_dict()
             }, {
                 'epoch': epoch + 1,
-                'state_dict': obj_pose_net.module.state_dict()
+                'state_dict': obj_pose_net.module.state_dict() if args.use_data_parallel else obj_pose_net.state_dict()
             },
             is_best)
 
@@ -333,6 +353,7 @@ def train(args, train_loader, disp_net, ego_pose_net, obj_pose_net, optimizer, e
     end = time.time()
     logger.train_bar.update(0)
 
+    
     for i, (tgt_img, ref_imgs, intrinsics, intrinsics_inv, tgt_insts, ref_insts) in enumerate(train_loader):
         if args.debug_mode and i > 5: break;
         # if i > 5: break;
@@ -358,7 +379,7 @@ def train(args, train_loader, disp_net, ego_pose_net, obj_pose_net, optimizer, e
         num_insts = [tgt_inst[:,0,0,0].int().detach().cpu().numpy().tolist() for tgt_inst in tgt_insts]     # Number of instances for each sequence
 
         ### object height piror ###
-        height_prior = disp_net.module.obj_height_prior
+        height_prior = disp_net.module.obj_height_prior if args.use_data_parallel else  disp_net.obj_height_prior
         
         ### compute depth & ego-motion ###
         tgt_depth, ref_depths = compute_depth(disp_net, tgt_img, ref_imgs)
@@ -594,7 +615,6 @@ def train(args, train_loader, disp_net, ego_pose_net, obj_pose_net, optimizer, e
     return losses.avg[0]
 
 
-
 @torch.no_grad()
 def validate_without_gt(args, val_loader, disp_net, ego_pose_net, obj_pose_net, epoch, logger):
     global device
@@ -685,7 +705,7 @@ def validate_with_gt(args, val_loader, disp_net, epoch, logger):
     errors_bg = AverageMeter(i=len(error_names))
 
     # switch to evaluate mode
-    disp_net = disp_net.module.to(device_val)
+    disp_net = disp_net.module.to(device_val) if args.use_data_parallel else disp_net.to(device_val)
     disp_net.eval()
 
     end = time.time()
@@ -811,7 +831,7 @@ def compute_obj_pose_with_inv(pose_net,   tgtI, tgtMs, r2tIs, r2tMs,   refIs, re
 
     obj_poses_fwd, obj_poses_bwd = [], []
     
-    for tgtM, r2tI, r2tM,   refI, refM, t2rI, t2rM,   num_inst in zip(tgtMs, r2tIs, r2tMs,   refIs, refMs, t2rIs, t2rMs,   num_insts):
+    for tgtM, r2tI, r2tM, refI, refM, t2rI, t2rM,   num_inst in zip(tgtMs, r2tIs, r2tMs,   refIs, refMs, t2rIs, t2rMs,   num_insts):
         obj_pose_fwd = torch.zeros([bs*mni, 3]).type_as(tgtI)
         obj_pose_bwd = torch.zeros([bs*mni, 3]).type_as(tgtI)
 

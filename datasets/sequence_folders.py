@@ -6,6 +6,7 @@ Seokju Lee
 
 '''
 
+import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -129,6 +130,36 @@ def recursive_check_nonzero_inst(tgt_inst, ref_inst):
             return recursive_check_nonzero_inst(tgt_inst, ref_inst)
     return tgt_inst, ref_inst
 
+def readlines(filename):
+    """Read all the lines in a text file and return as a list
+    """
+    with open(filename, 'r') as f:
+        lines = f.read().splitlines()
+    return lines
+
+def convert_file_img_paths(root_dir, filename, ext='.png'):
+    """Convert a text file storing info of train or val images to their paths
+    """
+    lines = readlines(os.path.join(root_dir, filename))
+    img_paths = []
+    for line in lines:
+        folder, img_name = line.split()
+        img_path = os.path.join(root_dir, folder, img_name + ext)
+        if not os.path.exists(img_path):
+            raise RuntimeError(f'{img_path} does not exist')
+        img_paths.append(img_path)
+    return img_paths
+
+def load_intrinsics(folder, frame_index):
+    """Load 3x3 camera intrinsics from a text file
+    
+    There are 9 entries in the same line separated by comma
+    """
+    intrinsics_file = os.path.join(folder, frame_index + '_cam.txt')
+    f = open(intrinsics_file, 'r') 
+    arr = np.array([ [float(e) for e in l.split(',')] for l in f.readlines() ])
+    arr = arr.reshape(3,3)
+    return arr.astype(np.float32)
 
 class SequenceFolder(data.Dataset):
     """
@@ -144,14 +175,25 @@ class SequenceFolder(data.Dataset):
 
     """
 
-    def __init__(self, root, train, seed=None, shuffle=True, max_num_instances=20, sequence_length=3, transform=None, proportion=1, begin_idx=None):
+    def __init__(self, root, file_structure, train, seed=None, shuffle=True, max_num_instances=20, sequence_length=3, transform=None, proportion=1, begin_idx=None):
+        
         np.random.seed(seed)
         random.seed(seed)
         self.root = Path(root)
-        scene_list_path = self.root/'train.txt' if train else self.root/'val.txt'
-        self.scenes = [self.root/'image'/folder[:-1] for folder in open(scene_list_path)]
         self.is_shuffle = shuffle
-        self.crawl_folders(sequence_length)
+        
+        if file_structure != 'custom':
+            scene_list_path = self.root/'train.txt' if train else self.root/'val.txt'
+            self.scenes = [self.root/'image'/folder[:-1] for folder in open(scene_list_path)]
+            self.crawl_folders(sequence_length)
+        else:
+            if train:
+                filename = 'train_files.txt'
+            else:
+                filename = 'val_files.txt'
+            self.img_paths = convert_file_img_paths(root, filename)
+            self.crawl_folders_custom(sequence_length)
+
         self.mni = max_num_instances
         self.transform = transform
         split_index = int(math.floor(len(self.samples)*proportion))
@@ -160,12 +202,67 @@ class SequenceFolder(data.Dataset):
             self.samples = self.samples[begin_idx:]
         # pdb.set_trace()
         
+    def crawl_folders_custom(self, sequence_length):
+        """Return a list of samples for custom file structure
+        Each sample is a dictionary containing the following keys:
+            intrinsics: 3x3 camera intrinsics
+            tgt: path to the target image
+            ref_imgs: adjacent frames of the target frame
+            flow_fs: forward flows of the target frame and its previous frame
+            flow_bs: backward flows of the target frame and its previous frame
+            tgt_seg: instance segmentation masks of the target frame
+            ref_segs: instance segmentation masks of the adjacent frames
+                      of the target frame
+        """
+        sequence_set = []
+        demi_length = (sequence_length-1)//2
+        shifts = list(range(-demi_length, demi_length + 1))
+        shifts.pop(demi_length)
+        
+        for img_path in self.img_paths:
+            folder = os.path.dirname(img_path)
+            idx_str, ext = os.path.basename(img_path).split('.')
+            idx_length = len(idx_str)
+            intrinsics = load_intrinsics(folder, idx_str)
+            segm_path = os.path.join(folder, idx_str + '-fseg.npy')
+            sample = {'intrinsics': intrinsics, 'tgt': Path(img_path),
+                      'ref_imgs': [], 'flow_fs':[], 'flow_bs':[],
+                      'tgt_seg':Path(segm_path), 'ref_segs':[]}   # ('tgt_insts':[], 'ref_insts':[]) will be processed when getitem() is called
+
+
+            for j in shifts:
+                updated_idx_str = str(int(idx_str) + j).zfill(idx_length)
+                sample['ref_imgs'].append(
+                        Path(os.path.join(folder, updated_idx_str + f'.{ext}'))
+                        )
+                sample['ref_segs'].append(
+                        Path(os.path.join(folder, updated_idx_str + '-fseg.npy'))
+                        )
+            for j in range(-demi_length, 1):
+                updated_idx_str = str(int(idx_str) + j).zfill(idx_length)
+                sample['flow_fs'].append(
+                        Path(os.path.join(folder, updated_idx_str + 'f.flo'))
+                        )
+                sample['flow_bs'].append(
+                        Path(os.path.join(folder, updated_idx_str + 'b.flo'))
+                        )
+            add_sample = True
+            for key in ['ref_imgs', 'flow_fs', 'flow_bs', 'ref_segs']:
+                for path_to_check_existence in sample[key]:
+                    if not path_to_check_existence.exists():
+                        add_sample = False
+            if add_sample:
+                sequence_set.append(sample)
+        if self.is_shuffle:
+            random.shuffle(sequence_set)
+        self.samples = sequence_set
+
 
     def crawl_folders(self, sequence_length):
         sequence_set = []
         demi_length = (sequence_length-1)//2
         shifts = list(range(-demi_length, demi_length + 1))
-        shifts.pop(demi_length)
+        shifts.pop(demi_length) # pop the entry in the middle
         for scene in self.scenes:
             sceneff = Path(Path.dirname(scene).parent+'/flow_f/'+scene.split('/')[-1])
             scenefb = Path(Path.dirname(scene).parent+'/flow_b/'+scene.split('/')[-1])
@@ -179,6 +276,7 @@ class SequenceFolder(data.Dataset):
 
             if len(imgs) < sequence_length:
                 continue
+            # drop index 0, ..., demi_length-1, len(imgs)-demi_length, ..., len(imgs) - 1
             for i in range(demi_length, len(imgs)-demi_length):
                 sample = {'intrinsics': intrinsics, 'tgt': imgs[i], 'ref_imgs': [],
                           'flow_fs':[], 'flow_bs':[], 'tgt_seg':segm[i], 'ref_segs':[]}   # ('tgt_insts':[], 'ref_insts':[]) will be processed when getitem() is called
@@ -189,7 +287,6 @@ class SequenceFolder(data.Dataset):
                     sample['flow_fs'].append(flof[i+j])
                     sample['flow_bs'].append(flob[i+j])
                 sequence_set.append(sample)
-            # pdb.set_trace()
         if self.is_shuffle:
             random.shuffle(sequence_set)
         self.samples = sequence_set
