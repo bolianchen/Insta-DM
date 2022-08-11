@@ -7,6 +7,7 @@ Seokju Lee
 '''
 
 import os
+import logging
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -20,6 +21,7 @@ from matplotlib import pyplot as plt
 from flow_io import flow_read
 from rigid_warp import flow_warp
 import pdb
+
 
 
 def load_as_float(path):
@@ -175,7 +177,10 @@ class SequenceFolder(data.Dataset):
 
     """
 
-    def __init__(self, root, file_structure, train, seed=None, shuffle=True, max_num_instances=20, sequence_length=3, transform=None, proportion=1, begin_idx=None):
+    def __init__(self, root, file_structure, train, seed=None, shuffle=True,
+            max_num_instances=20, sequence_length=3, transform=None,
+            proportion=1, begin_idx=None, path_to_swap='', swap_imgs=False,
+            swap_segmentations=False, swap_flows=False):
         
         np.random.seed(seed)
         random.seed(seed)
@@ -192,7 +197,11 @@ class SequenceFolder(data.Dataset):
             else:
                 filename = 'val_files.txt'
             self.img_paths = convert_file_img_paths(root, filename)
-            self.crawl_folders_custom(sequence_length)
+            self.crawl_folders_custom(
+                    sequence_length,
+                    path_to_swap=path_to_swap, swap_imgs=swap_imgs,
+                    swap_segmentations=swap_segmentations,
+                    swap_flows=swap_flows)
 
         self.mni = max_num_instances
         self.transform = transform
@@ -202,7 +211,8 @@ class SequenceFolder(data.Dataset):
             self.samples = self.samples[begin_idx:]
         # pdb.set_trace()
         
-    def crawl_folders_custom(self, sequence_length):
+    def crawl_folders_custom(self, sequence_length, path_to_swap='',
+            swap_imgs=False, swap_segmentations=False, swap_flows=False):
         """Return a list of samples for custom file structure
         Each sample is a dictionary containing the following keys:
             intrinsics: 3x3 camera intrinsics
@@ -214,6 +224,8 @@ class SequenceFolder(data.Dataset):
             ref_segs: instance segmentation masks of the adjacent frames
                       of the target frame
         """
+        logging.basicConfig(filename='log.txt', level=logging.DEBUG,
+                filemode='w')
         sequence_set = []
         demi_length = (sequence_length-1)//2
         shifts = list(range(-demi_length, demi_length + 1))
@@ -223,40 +235,88 @@ class SequenceFolder(data.Dataset):
             folder = os.path.dirname(img_path)
             idx_str, ext = os.path.basename(img_path).split('.')
             idx_length = len(idx_str)
-            intrinsics = load_intrinsics(folder, idx_str)
-            segm_path = os.path.join(folder, idx_str + '-fseg.npy')
+            if swap_imgs:
+                ext = 'jpg'
+                folder = os.path.join(
+                        path_to_swap,
+                        'image', os.path.basename(folder))
+                img_path = os.path.join(folder, idx_str + f'.{ext}')
+                try:
+                    intrinsics = np.genfromtxt(os.path.join(folder, 'cam.txt')
+                            ).astype(np.float32).reshape((3, 3))
+                except:
+                    logging.info(f'{os.path.basename(folder)} does not exist')
+                    continue
+            else:
+                intrinsics = load_intrinsics(folder, idx_str)
+
+            if swap_segmentations:
+                segs_folder = os.path.join(
+                        path_to_swap,
+                        'segmentation', os.path.basename(folder))
+                segm_path = os.path.join(segs_folder, idx_str + '.npy')
+            else:
+                segm_path = os.path.join(folder, idx_str + '-fseg.npy')
+
+            if swap_flows:
+                flowsb_folder = os.path.join(
+                        path_to_swap,
+                        'flow_b', os.path.basename(folder))
+                flowsf_folder = os.path.join(
+                        path_to_swap,
+                        'flow_f', os.path.basename(folder))
+            # ('tgt_insts':[], 'ref_insts':[]) will be processed
+            # when getitem() is called
+            if not Path(img_path).exists() or not Path(segm_path).exists():
+                logging.info(f'{img_path} does not exist')
+                continue
+
             sample = {'intrinsics': intrinsics, 'tgt': Path(img_path),
                       'ref_imgs': [], 'flow_fs':[], 'flow_bs':[],
-                      'tgt_seg':Path(segm_path), 'ref_segs':[]}   # ('tgt_insts':[], 'ref_insts':[]) will be processed when getitem() is called
-
+                      'tgt_seg':Path(segm_path), 'ref_segs':[]}   
 
             for j in shifts:
                 updated_idx_str = str(int(idx_str) + j).zfill(idx_length)
                 sample['ref_imgs'].append(
                         Path(os.path.join(folder, updated_idx_str + f'.{ext}'))
                         )
-                sample['ref_segs'].append(
-                        Path(os.path.join(folder, updated_idx_str + '-fseg.npy'))
-                        )
+                if swap_segmentations:
+                    sample['ref_segs'].append(
+                            Path(os.path.join(segs_folder, updated_idx_str + '.npy'))
+                            )
+                else:
+                    sample['ref_segs'].append(
+                            Path(os.path.join(folder, updated_idx_str + '-fseg.npy'))
+                            )
             for j in range(-demi_length, 1):
                 updated_idx_str = str(int(idx_str) + j).zfill(idx_length)
-                sample['flow_fs'].append(
-                        Path(os.path.join(folder, updated_idx_str + 'f.flo'))
+                if swap_flows:
+                    sample['flow_fs'].append(
+                            Path(os.path.join(
+                                flowsf_folder, updated_idx_str + '.flo'))
+                            )
+                    sample['flow_bs'].append(
+                            Path(os.path.join(
+                                flowsb_folder, updated_idx_str + '.flo'))
                         )
-                sample['flow_bs'].append(
-                        Path(os.path.join(folder, updated_idx_str + 'b.flo'))
+                else:
+                    sample['flow_fs'].append(
+                            Path(os.path.join(folder, updated_idx_str + 'f.flo'))
+                            )
+                    sample['flow_bs'].append(
+                            Path(os.path.join(folder, updated_idx_str + 'b.flo'))
                         )
             add_sample = True
             for key in ['ref_imgs', 'flow_fs', 'flow_bs', 'ref_segs']:
                 for path_to_check_existence in sample[key]:
                     if not path_to_check_existence.exists():
                         add_sample = False
+                        logging.info(f'{path_to_check_existence} does not exist')
             if add_sample:
                 sequence_set.append(sample)
         if self.is_shuffle:
             random.shuffle(sequence_set)
         self.samples = sequence_set
-
 
     def crawl_folders(self, sequence_length):
         sequence_set = []

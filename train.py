@@ -104,6 +104,20 @@ parser.add_argument(
         '--use_data_parallel', action='store_true',
         help='whether to use torch.nn.DataParallel to wrap networks')
 
+# SWAP EXPs
+parser.add_argument(
+        '--path_to_swap', type=str,
+        default='', help='')
+
+parser.add_argument(
+        '--swap_imgs', action='store_true',
+        help='')
+parser.add_argument(
+        '--swap_segmentations', action='store_true',
+        help='')
+parser.add_argument(
+        '--swap_flows', action='store_true',
+        help='')
 
 best_error = -1
 n_iter = 0
@@ -163,7 +177,11 @@ def main():
         shuffle=not(args.no_shuffle),
         max_num_instances=args.mni,
         sequence_length=args.sequence_length,
-        transform=train_transform
+        transform=train_transform,
+        path_to_swap=args.path_to_swap,
+        swap_imgs=args.swap_imgs,
+        swap_segmentations=args.swap_segmentations,
+        swap_flows=args.swap_flows
     )
 
     # if no GT is available (e.g., Cityscapes), Validation set is the same type as training set to measure photometric loss from warping
@@ -183,7 +201,11 @@ def main():
             max_num_instances=args.mni,
             sequence_length=args.sequence_length,
             transform=valid_transform,
-            proportion=0.1
+            proportion=0.1,
+            path_to_swap=args.path_to_swap,
+            swap_imgs=args.swap_imgs,
+            swap_segmentations=args.swap_segmentations,
+            swap_flows=args.swap_flows
         )
     print('=> {} samples found in training set || {} samples found in validation set'.format(len(train_set), len(val_set)))
     
@@ -316,7 +338,7 @@ def main():
             args.save_freq,
             args.save_path, {
                 'epoch': epoch + 1,
-                'state_dict': disp_net.module.state_dict() if args.use_data_paralle else disp_net.state_dict()
+                'state_dict': disp_net.module.state_dict() if args.use_data_parallel else disp_net.state_dict()
             }, {
                 'epoch': epoch + 1,
                 'state_dict': ego_pose_net.module.state_dict() if args.use_data_parallel else ego_pose_net.state_dict()
@@ -754,11 +776,11 @@ def validate_with_gt(args, val_loader, disp_net, epoch, logger):
 
 
 
-def compute_depth(disp_net, tgt_img, ref_imgs):
-    tgt_depth = 1/disp_net(tgt_img)
+def compute_depth(disp_net, tgt_img, ref_imgs, eps=1e-7):
+    tgt_depth = 1/(disp_net(tgt_img) + eps)
     ref_depths = []
     for ref_img in ref_imgs:
-        ref_depth = 1/disp_net(ref_img)
+        ref_depth = 1/(disp_net(ref_img) + eps)
         ref_depths.append(ref_depth)
 
     return tgt_depth, ref_depths
