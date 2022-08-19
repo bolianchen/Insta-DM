@@ -1,4 +1,6 @@
 from __future__ import division
+import os
+import cv2
 import shutil
 import numpy as np
 import torch
@@ -158,3 +160,39 @@ def save_checkpoint(epoch, save_freq, save_path, dispnet_state, ego_pose_state, 
     if is_best:
         for prefix in file_prefixes:
             shutil.copyfile(save_path/'{}_{}'.format(prefix,filename), save_path/'{}_model_best.pth.tar'.format(prefix))
+
+def overlay_images_with_masks(path, ext='.png'):
+    """Overlay images with segmentation masks
+
+    This function is to find all the *.png(images) and *-fseg.npy(masks) pairs
+    and generate new images by overlapping masks over images.
+    
+    Args:
+        path: path to the root folder to search valid pairs from top to bottom
+    """
+    for entry in os.scandir(path):
+        if entry.name.endswith(ext):
+            img_path = entry.path
+            mask_path = os.path.join(
+                    os.path.dirname(img_path),
+                    os.path.basename(img_path).replace(ext, '-fseg.npy'))
+            if os.path.exists(mask_path):
+                img = cv2.imread(img_path)
+                mask = np.any(np.load(mask_path), axis=0)
+                overlay = np.zeros(mask.shape + (3,), dtype=np.uint8)
+                overlay[mask] = [0, 0, 255]
+                img_overlaid_with_mask = cv2.addWeighted(
+                        img, 0.5, overlay, 0.5, 0)
+                cv2.imwrite(mask_path.replace('.npy', '.png'),
+                            img_overlaid_with_mask)
+        elif entry.is_dir(follow_symlinks=False):
+            overlay_images_with_masks(entry, ext)
+
+
+if __name__ == '__main__':
+
+    test_path = '/home/bryanchen/Desktop/hdd/Dataset/DEPTH/INSTA_DM/kitti'
+    overlay_images_with_masks(test_path)
+    import pdb; pdb.set_trace()
+
+
