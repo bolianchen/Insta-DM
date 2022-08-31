@@ -18,6 +18,10 @@ if __name__ == '__main__':
     parser.add_argument('--root_dir', type=str,
                         default= '/home/bryanchen/Coding/Projects/ss_depth/DATASETS/video_data',
                         help='root directory of data')
+    parser.add_argument('--img_ext',
+                        type=str, choices=['png', 'jpg'],
+                        default='png',
+                        help='image format')
     parser.add_argument('--divisor',
                         type=float,
                         default=64.0,
@@ -46,7 +50,8 @@ if __name__ == '__main__':
     net.eval()
 
     for file_name in ['train_files.txt', 'val_files.txt']:
-        img_paths = convert_file_img_paths(args.root_dir, file_name)
+        img_paths = convert_file_img_paths(args.root_dir, file_name,
+                                           ext=args.img_ext)
         
         for orientation in ['forward', 'backward']:
             dataset = FlowDataset(img_paths, divisor=args.divisor,

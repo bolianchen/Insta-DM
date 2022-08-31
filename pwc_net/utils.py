@@ -55,7 +55,7 @@ def convert_file_img_paths(root_dir, filename, ext='.png'):
     img_paths = []
     for line in lines:
         folder, img_name = line.split()
-        img_path = os.path.join(root_dir, folder, img_name + ext)
+        img_path = os.path.join(root_dir, folder, img_name + '.' + ext)
         if not os.path.exists(img_path):
             raise RuntimeError(f'{img_path} does not exist')
         img_paths.append(img_path)

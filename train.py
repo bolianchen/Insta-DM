@@ -49,6 +49,8 @@ parser.add_argument(
         help ='how training data are organized: '
               'leave it an empty string to use the official Insta-DM format'
               'set it custom to apply the custom format adopted by this fork')
+parser.add_argument('--custom_img_ext', type=str, choices=['png', 'jpg'], default='jpg',
+                    help='image format while using custom data')
 parser.add_argument('--with-gt', action='store_true', help='use ground truth for validation. You need to store it in npy 2D arrays see data/kitti_raw_loader.py for an example')
 parser.add_argument('--sequence-length', type=int, metavar='N', help='sequence length for training', default=3)
 parser.add_argument('-mni', type=int, help='maximum number of instances', default=20)
@@ -181,7 +183,8 @@ def main():
         path_to_swap=args.path_to_swap,
         swap_imgs=args.swap_imgs,
         swap_segmentations=args.swap_segmentations,
-        swap_flows=args.swap_flows
+        swap_flows=args.swap_flows,
+        custom_img_ext=args.custom_img_ext
     )
 
     # if no GT is available (e.g., Cityscapes), Validation set is the same type as training set to measure photometric loss from warping
@@ -205,7 +208,8 @@ def main():
             path_to_swap=args.path_to_swap,
             swap_imgs=args.swap_imgs,
             swap_segmentations=args.swap_segmentations,
-            swap_flows=args.swap_flows
+            swap_flows=args.swap_flows,
+            custom_img_ext=args.custom_img_ext
         )
     print('=> {} samples found in training set || {} samples found in validation set'.format(len(train_set), len(val_set)))
     

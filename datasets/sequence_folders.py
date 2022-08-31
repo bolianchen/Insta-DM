@@ -180,7 +180,7 @@ class SequenceFolder(data.Dataset):
     def __init__(self, root, file_structure, train, seed=None, shuffle=True,
             max_num_instances=20, sequence_length=3, transform=None,
             proportion=1, begin_idx=None, path_to_swap='', swap_imgs=False,
-            swap_segmentations=False, swap_flows=False):
+            swap_segmentations=False, swap_flows=False, custom_img_ext='png'):
         
         np.random.seed(seed)
         random.seed(seed)
@@ -196,7 +196,8 @@ class SequenceFolder(data.Dataset):
                 filename = 'train_files.txt'
             else:
                 filename = 'val_files.txt'
-            self.img_paths = convert_file_img_paths(root, filename)
+            self.img_paths = convert_file_img_paths(
+                    root, filename, ext=f'.{custom_img_ext}')
             self.crawl_folders_custom(
                     sequence_length,
                     path_to_swap=path_to_swap, swap_imgs=swap_imgs,
