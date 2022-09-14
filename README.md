@@ -4,12 +4,21 @@
 This projective is to prepare training data for video data given camera intrinsics. Please check [the original repository](https://github.com/SeokjuLee/Insta-DM) to ​know the details.
 
 ## Environment Setup
+
+Setup a conda environment
 ```
 conda create -n insta_dm python=3.7.4
 conda activate insta_dm
 conda install pytorch==1.8.0 torchvision==0.9.0 torchaudio=0.8.0 cudatoolkit=11.1 -c pytorch -c conda-forge
 conda install pytorch-sparse -c pyg
 pip install -r requirements.txt # revise matplotlib==3.4.3
+```
+
+Install the dependencies for optical flow generation
+```
+cd ./pwc_net/correlation_package
+rm -rf *_cuda.egg-info build dist __pycache__
+python3 setup.py install --user
 ```
 
 ## Data Preparation from Videos
