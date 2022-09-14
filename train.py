@@ -72,7 +72,10 @@ parser.add_argument('--momentum', default=0.9, type=float, metavar='M', help='mo
 parser.add_argument('--beta', default=0.999, type=float, metavar='M', help='beta parameters for adam')
 parser.add_argument('--weight-decay', '--wd', default=0, type=float, metavar='W', help='weight decay')
 parser.add_argument('--print-freq', default=10, type=int, metavar='N', help='print frequency')
-parser.add_argument('--save-freq', default=3, type=int, metavar='N', help='save frequency')
+parser.add_argument('--save-freq', default=3, type=int, metavar='N',
+                    help='save frequency, the value of 3 represents saving '
+                         'a checkpoint every 3 epochs, set 0 to only save'
+                         'the best checkpoint')
 parser.add_argument('--resnet-layers',  type=int, default=18, choices=[18, 50], help='number of ResNet layers for depth estimation.')
 parser.add_argument('--with-pretrain', type=int,  default=1, help='with or without imagenet pretrain for resnet')
 parser.add_argument('--resnet-pretrained', action='store_true', help='pretrained from resnet model or not')

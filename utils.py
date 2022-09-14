@@ -153,9 +153,10 @@ def save_checkpoint(epoch, save_freq, save_path, dispnet_state, ego_pose_state, 
     for (prefix, state) in zip(file_prefixes, states):
         torch.save(state, save_path/'{}_{}'.format(prefix,filename))
 
-    if epoch % save_freq == 0:
-        for (prefix, state) in zip(file_prefixes, states):
-            torch.save(state, save_path/'{}_{}_{}'.format(prefix, epoch, filename))
+    if save_freq != 0:
+        if epoch % save_freq == 0:
+            for (prefix, state) in zip(file_prefixes, states):
+                torch.save(state, save_path/'{}_{}_{}'.format(prefix, epoch, filename))
 
     if is_best:
         for prefix in file_prefixes:
