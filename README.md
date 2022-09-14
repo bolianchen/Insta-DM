@@ -11,3 +11,37 @@ conda install pytorch==1.8.0 torchvision==0.9.0 torchaudio=0.8.0 cudatoolkit=11.
 conda install pytorch-sparse -c pyg
 pip install -r requirements.txt # revise matplotlib==3.4.3
 ```
+
+## Data Preparation from Videos
+
+```
+# generate images and instance segmentation masks from videos
+python gen_data.py --dataset_name video --dataset_dir $FOLDER_OF_VIDEOS \
+                   --save_dir $FOLDER_TO_SAVE_DATA --save_img_ext jpg \
+                   --intrinsics intrinsics.txt \ # flattened 9 entries of the camera matrix 
+                   --img_height $HEIGHT --img_width $WIDTH --mask instance \
+                   --single_process --del_static_frames 
+
+# generate optical flows
+python gen_optical_flows.py --root_dir $FOLDER_TO_SAVE_DATA \
+                            --img_ext jpg \
+```
+The content of an example intrinsics.txt is shown below. It contains the 9 entries of a flattented camera matrix.
+```
+1344.8 0.0 640.0 0.0 1344.8 360.0 0.0 0.0 1.0
+```
+
+## Training
+
+Please download the checkpoints pretrained on KITTI or Cityscapes from [the official site](https://github.com/SeokjuLee/Insta-DM#models) to $PRETRAINED
+
+```
+CUDA_VISIBLE_DEVICES=0 python train.py $FOLDER_TO_SAVE_DATA \
+        --pretrained-disp $PRETRAINED/resnet18_disp_kt.tar \
+        --pretrained-ego-pose $PRETRAINED/resnet18_ego_kt.tar \
+        --pretrained-obj-pose $PRETRAINED/resnet18_obj_kt.tar \
+        --data_file_structure custom \
+        -b 4 -p 2.0 -c 1.0 -s 0.1 -o 0.02 -mc 0.1 -hp 0 -dm 0 -mni 5 \
+        --epoch-size 1000 --with-ssim --with-mask --with-auto-mask \
+        --name $MODEL_NAME  # models would be saved in checkpoints/$MODEL_NAME within the project folder
+```
