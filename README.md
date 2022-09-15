@@ -14,7 +14,7 @@ conda install pytorch-sparse -c pyg
 pip install -r requirements.txt # revise matplotlib==3.4.3
 ```
 
-Install the dependencies for optical flow generation
+Install the dependencies for optical flow generation. Please ensure the version of your local CUDA toolkit newer or equal to 10.2.
 ```
 cd ./pwc_net/correlation_package
 rm -rf *_cuda.egg-info build dist __pycache__
