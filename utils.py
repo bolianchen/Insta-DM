@@ -3,6 +3,7 @@ import os
 import cv2
 import shutil
 import numpy as np
+from PIL import Image
 import torch
 from path import Path
 import datetime
@@ -189,6 +190,31 @@ def overlay_images_with_masks(path, ext='.png'):
         elif entry.is_dir(follow_symlinks=False):
             overlay_images_with_masks(entry, ext)
 
+def load_intrinsics(folder, frame_index):
+    """Load 3x3 camera intrinsics from a text file
+    
+    There are 9 entries in the same line separated by comma
+    """
+    intrinsics_file = os.path.join(folder, frame_index + '_cam.txt')
+    f = open(intrinsics_file, 'r') 
+    arr = np.array([ [float(e) for e in l.split(',')] for l in f.readlines() ])
+    arr = arr.reshape(3,3)
+    return arr.astype(np.float32)
+
+def scale_array(arr, scale_factor):
+    arr = arr.copy()
+    min_element = np.min(arr)
+    max_element = np.max(arr)
+    arr -= min_element
+    arr /= max_element - min_element
+    img = Image.fromarray((arr * 255).astype(np.uint8))
+    new_size = int(img.size[0] * scale_factor), int(img.size[1] * scale_factor)
+    img = img.resize(new_size)
+    arr = np.array(img)
+    arr = arr / 255.0
+    arr *= max_element - min_element
+    arr += min_element
+    return np.clip(arr, min_element, max_element)
 
 if __name__ == '__main__':
 

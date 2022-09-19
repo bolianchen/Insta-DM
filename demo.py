@@ -18,12 +18,14 @@ import datetime
 import os
 import numpy as np
 from imageio import imread
+from PIL import Image
 from scipy import stats
 import itertools
 
 import torch
 import torch.backends.cudnn as cudnn
 
+from utils import load_intrinsics, scale_array
 import models
 import custom_transforms
 from flow_io import flow_read
@@ -36,9 +38,15 @@ from mpl_toolkits.mplot3d.axes3d import Axes3D
 import pdb
 
 
-
 parser = argparse.ArgumentParser(description='Instance-wise Depth and Motion Learning', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 parser.add_argument('--data', metavar='DIR', help='path to dataset dir')
+parser.add_argument(
+        '--data_file_structure', type=str, default='', choices=['', 'custom'],
+        help ='how training data are organized: '
+              'leave it an empty string to use the official Insta-DM format'
+              'set it custom to apply the custom format adopted by this fork')
+parser.add_argument('--custom_img_ext', type=str, choices=['png', 'jpg'], default='jpg',
+                    help='image format while using custom data')
 parser.add_argument('-b', '--batch-size', default=1, type=int, metavar='N', help='mini-batch size')
 parser.add_argument('-j', '--workers', default=0, type=int, metavar='N', help='number of data loading workers')
 parser.add_argument('--pretrained-disp', dest='pretrained_disp', default=None, metavar='PATH', help='path to pre-trained dispresnet model')
@@ -47,30 +55,62 @@ parser.add_argument('--pretrained-obj-pose', dest='pretrained_obj_pose', default
 parser.add_argument('--mni', default=3, type=int, help='maximum number of instances')
 parser.add_argument('--name', dest='name', type=str, required=True, help='name of the experiment, checkpoints are stored in checpoints/name')
 parser.add_argument('--save-fig', action='store_true', help='save figures or not')
+parser.add_argument(
+        '--use_data_parallel', action='store_true',
+        help='whether to use torch.nn.DataParallel to wrap networks')
 
 device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
+HEIGHT, WIDTH = 256, 832
 
 class SequenceFolder():
-    def __init__(self, data_dir, transform, max_num_instances):
+    def __init__(self, data_dir, file_structure, transform,
+            max_num_instances, custom_img_ext='jpg'):
         self.transform = transform
         self.max_num_instances = max_num_instances
-        
-        img_dir = Path(data_dir)
-        seg_dir = Path(os.path.join(img_dir.dirname().parent, 'segmentation', img_dir.basename()))
-        flo_dir = [Path(os.path.join(img_dir.dirname().parent, 'flow_f', img_dir.basename())), Path(os.path.join(img_dir.dirname().parent, 'flow_b', img_dir.basename()))]
+        self.crawl_data(data_dir, file_structure, custom_img_ext)
 
-        intrinsics = np.genfromtxt(img_dir/'cam.txt').astype(np.float32).reshape((3, 3))
-        imgs = sorted(img_dir.files('*.jpg'))
-        flof = sorted(flo_dir[0].files('*.flo'))   # 00: src, 01: tgt
-        flob = sorted(flo_dir[1].files('*.flo'))   # 00: tgt, 01: src
-        segm = sorted(seg_dir.files('*.npy')) 
-        
+    def crawl_data(self, data_dir, file_structure, custom_img_ext):
+        """Collect test data from the specified folder"""
+
+        img_dir = Path(data_dir)
+        if file_structure != 'custom':
+            seg_dir = Path(os.path.join(img_dir.dirname().parent, 'segmentation', img_dir.basename()))
+            flo_dir = [Path(os.path.join(img_dir.dirname().parent, 'flow_f', img_dir.basename())),
+                       Path(os.path.join(img_dir.dirname().parent, 'flow_b', img_dir.basename()))]
+            intrinsics = np.genfromtxt(img_dir/'cam.txt').astype(np.float32).reshape((3, 3))
+            imgs = sorted(img_dir.files('*.jpg'))
+            flof = sorted(flo_dir[0].files('*.flo'))   # 00: src, 01: tgt
+            flob = sorted(flo_dir[1].files('*.flo'))   # 00: tgt, 01: src
+            segm = sorted(seg_dir.files('*.npy')) 
+        else:
+            intrinsics_file = img_dir.files('*_cam.txt')[0].basename()
+            idx_str = intrinsics_file.split('_')[0]
+            intrinsics = load_intrinsics(img_dir, idx_str)
+            
+            tmp_imgs = sorted(img_dir.files(f'*.{custom_img_ext}'))
+            imgs, flof, flob, segm = [], [], [], []
+            for img in tmp_imgs:
+                img_idx_str = img.basename().split('.')[0]
+                flof_file = Path(img_dir/img_idx_str + 'f.flo')
+                flob_file = Path(img_dir/img_idx_str + 'b.flo')
+                segm_file = Path(img_dir/img_idx_str + '-fseg.npy')
+
+                if (flof_file.exists() and flob_file.exists() and
+                    segm_file.exists()):
+                    imgs.append(img)
+                    flof.append(flof_file)
+                    flob.append(flob_file)
+                    segm.append(segm_file)
+
         sequence_set = []
         for i in range(len(imgs)-1):
-            sample = {'intrinsics':intrinsics, 'img0':imgs[i], 'img1':imgs[i+1], 
-                      'flof':flof[i], 'flob':flob[i], 'seg0':segm[i], 'seg1':segm[i+1]}   # will be processed when getitem() is called
-            sequence_set.append(sample)
+            cur_idx = int(imgs[i].basename().split('.')[0])
+            next_idx = int(imgs[i+1].basename().split('.')[0])
+            if next_idx - cur_idx == 1:
+                sample = {'intrinsics':intrinsics, 'img0':imgs[i], 'img1':imgs[i+1], 
+                          'flof':flof[i], 'flob':flob[i], 'seg0':segm[i], 'seg1':segm[i+1]}   # will be processed when getitem() is called
+                sequence_set.append(sample)
         self.samples = sequence_set
 
     def __getitem__(self, index):
@@ -138,8 +178,6 @@ class SequenceFolder():
     def __len__(self):
         return len(self.samples)
 
-
-
 def main():
     print('=> PyTorch version: ' + torch.__version__ + ' || CUDA_VISIBLE_DEVICES: ' + os.environ["CUDA_VISIBLE_DEVICES"])
 
@@ -159,8 +197,10 @@ def main():
     ])
     demo_set = SequenceFolder(
         args.data,
+        args.data_file_structure,
         transform=demo_transform,
-        max_num_instances=args.mni
+        max_num_instances=args.mni,
+        custom_img_ext=args.custom_img_ext
     )
     print('=> {} samples found'.format(len(demo_set)))
     demo_loader = torch.utils.data.DataLoader(demo_set, batch_size=args.batch_size, shuffle=False, num_workers=args.workers, pin_memory=True)
@@ -193,13 +233,12 @@ def main():
         disp_net.init_weights()
 
     cudnn.benchmark = True
-    disp_net = torch.nn.DataParallel(disp_net)
-    ego_pose_net = torch.nn.DataParallel(ego_pose_net)
-    obj_pose_net = torch.nn.DataParallel(obj_pose_net)
+    if args.use_data_parallel:
+        disp_net = torch.nn.DataParallel(disp_net)
+        ego_pose_net = torch.nn.DataParallel(ego_pose_net)
+        obj_pose_net = torch.nn.DataParallel(obj_pose_net)
 
     demo_visualize(args, demo_loader, disp_net, ego_pose_net, obj_pose_net)
-
-
 
 @torch.no_grad()
 def demo_visualize(args, demo_loader, disp_net, ego_pose_net, obj_pose_net):
@@ -223,6 +262,9 @@ def demo_visualize(args, demo_loader, disp_net, ego_pose_net, obj_pose_net):
     vidx = 0
 
     for i, (ref_img, tgt_img, ref_seg, tgt_seg, intrinsics, intrinsics_inv) in enumerate(demo_loader):
+
+        _, _, img_height, img_width = ref_img.shape
+        scale_factor = min(HEIGHT/img_height, WIDTH/img_width)
 
         ref_img = ref_img.to(device)
         tgt_img = tgt_img.to(device)
@@ -369,11 +411,18 @@ def demo_visualize(args, demo_loader, disp_net, ego_pose_net, obj_pose_net):
             ego_vo_scale = 0.015
 
         ### CS ###
-        if 'cityscapes' in args.data:
+        elif 'cityscapes' in args.data:
             xlim_1 = 0.1;  ylim_1 = 0.1;  zlim_1 = 0.4;
             xlim_2 = 0.12;  ylim_2 = 0.06;  zlim_2 = 0.60;
             obj_vo_scale = 3.0
             ego_vo_scale = 0.005
+        
+        # D700
+        else:
+            xlim_1 = 0.25; ylim_1 = 0.1;  zlim_1 = 1.2;
+            xlim_2 = 0.25; ylim_2 = 0.1;  zlim_2 = 1.2;
+            obj_vo_scale = 3.0
+            ego_vo_scale = 0.015
 
 
         ego_init_o = np.array([0,0,0,1]).reshape(4,1)
@@ -400,14 +449,23 @@ def demo_visualize(args, demo_loader, disp_net, ego_pose_net, obj_pose_net):
         r2t_obj_3d_locs = []
         rtt_obj_3d_locs = []
         tgt_obj_3d_locs = []
-        for r2t_obj_coords in r2t_objs_coords: r2t_obj_3d_locs.append(torch.cat([coords[coords!=0].mean().unsqueeze(0) for coords in r2t_obj_coords]))
-        for rtt_obj_coords in rtt_objs_coords: rtt_obj_3d_locs.append(torch.cat([coords[coords!=0].mean().unsqueeze(0) for coords in rtt_obj_coords]))
-        for tgt_obj_coords in tgt_objs_coords: tgt_obj_3d_locs.append(torch.cat([coords[coords!=0].mean().unsqueeze(0) for coords in tgt_obj_coords]))
-        for obj_loc in tgt_obj_3d_locs: objOs.append( (ego_global_mat @ np.concatenate([obj_loc.detach().cpu().numpy(), np.array([1])]).reshape(4,1))[:3].squeeze() );
+        for r2t_obj_coords in r2t_objs_coords:
+            r2t_obj_3d_locs.append(torch.cat([coords[coords!=0].mean().unsqueeze(0) for coords in r2t_obj_coords]))
+        for rtt_obj_coords in rtt_objs_coords:
+            rtt_obj_3d_locs.append(torch.cat([coords[coords!=0].mean().unsqueeze(0) for coords in rtt_obj_coords]))
+        for tgt_obj_coords in tgt_objs_coords:
+            tgt_obj_3d_locs.append(torch.cat([coords[coords!=0].mean().unsqueeze(0) for coords in tgt_obj_coords]))
+        for obj_loc in tgt_obj_3d_locs:
+            objOs.append( (ego_global_mat @ np.concatenate([obj_loc.detach().cpu().numpy(), np.array([1])]).reshape(4,1))[:3].squeeze() );
+
         objHs_pred, objHs_comp = [], []
-        for ii in range(len(obj_pose_inv)): objHs_pred.append( (ego_global_mat @ np.concatenate([tgt_obj_3d_locs[ii].detach().cpu().numpy(), np.array([1])]).reshape(4,1))[:3].squeeze() + obj_vo_scale*obj_pose_inv[ii].detach().cpu().numpy()[:3] )
-        for ii in range(len(obj_pose_inv)): objHs_comp.append( (ego_global_mat @ np.concatenate([tgt_obj_3d_locs[ii].detach().cpu().numpy(), np.array([1])]).reshape(4,1))[:3].squeeze() - obj_vo_scale*tr_fwd[0][ii].detach().cpu().numpy() )
-        for pred, comp in zip(objHs_pred, objHs_comp): objHs.append( (pred + comp) / 2 )
+        for ii in range(len(obj_pose_inv)):
+            objHs_pred.append( (ego_global_mat @ np.concatenate([tgt_obj_3d_locs[ii].detach().cpu().numpy(), np.array([1])]).reshape(4,1))[:3].squeeze() + obj_vo_scale*obj_pose_inv[ii].detach().cpu().numpy()[:3] )
+        for ii in range(len(obj_pose_inv)):
+            objHs_comp.append( (ego_global_mat @ np.concatenate([tgt_obj_3d_locs[ii].detach().cpu().numpy(), np.array([1])]).reshape(4,1))[:3].squeeze() - obj_vo_scale*tr_fwd[0][ii].detach().cpu().numpy() )
+        for pred, comp in zip(objHs_pred, objHs_comp):
+            objHs.append( (pred + comp) / 2 )
+
         r2t_obj_3d_loc = torch.stack(r2t_obj_3d_locs).unsqueeze(-1).unsqueeze(-1)
         r2t_obj_homo, _ = cam2homo(r2t_obj_3d_loc, intrinsics.repeat(num_inst,1,1), torch.zeros([1,3,1]).cuda())
         r2t_obj_tail = r2t_obj_homo.reshape(num_inst,2).detach().cpu().numpy()
@@ -428,8 +486,8 @@ def demo_visualize(args, demo_loader, disp_net, ego_pose_net, obj_pose_net):
         ref_masked = (ref + 0.2 * ref_inst).clip(max=1.0)
         d_tgt = 1/tgt_depth.detach().cpu()[bb%args.batch_size,0]
         d_ref = 1/ref_depth.detach().cpu()[bb%args.batch_size,0]
-        r2t_obj = (r2t_obj_imgs[0].sum(dim=0) * 0.5 + 0.5).detach().cpu().numpy().transpose(1,2,0) if num_inst != 0 else np.zeros([256,832,3])
-        tgt_obj = (tgt_obj_img.sum(dim=0) * 0.5 + 0.5).detach().cpu().numpy().transpose(1,2,0) if num_inst != 0 else np.zeros([256,832,3])
+        r2t_obj = (r2t_obj_imgs[0].sum(dim=0) * 0.5 + 0.5).detach().cpu().numpy().transpose(1,2,0) if num_inst != 0 else np.zeros([img_height,img_width,3])
+        tgt_obj = (tgt_obj_img.sum(dim=0) * 0.5 + 0.5).detach().cpu().numpy().transpose(1,2,0) if num_inst != 0 else np.zeros([img_height,img_width,3])
         i_w_bg = (IMDDs[sq][0] * 0.5 + 0.5)[bb].detach().cpu().numpy().transpose(1,2,0)
         i_w_obj = (obj_IMDDs[sq][0] * 0.5 + 0.5)[bb].detach().cpu().numpy().transpose(1,2,0)
         i_w = ((IMDDs[sq][0] + obj_IMDDs[sq][0]) * 0.5 + 0.5)[bb].detach().cpu().numpy().transpose(1,2,0)
@@ -476,6 +534,7 @@ def demo_visualize(args, demo_loader, disp_net, ego_pose_net, obj_pose_net):
         text_xy = [7, -16]
         text_fd = {'family': 'sans', 'size': 13, 'color': 'black', 'style': 'italic'}
         fig.add_subplot(gs[0, 0:2])
+        ref_masked = scale_array(ref_masked, scale_factor)
         plt.imshow(ref_masked, vmax=1); plt.text(text_xy[0], text_xy[1], "$I_{t}$", fontdict=text_fd);
         plt.xticks([]) and plt.yticks([]) if args.save_fig else plt.grid(linestyle=':', linewidth=0.4) 
         if not args.save_fig: plt.grid(linestyle=':', linewidth=0.4);
@@ -483,18 +542,22 @@ def demo_visualize(args, demo_loader, disp_net, ego_pose_net, obj_pose_net):
         plt.text(55, -9, "Model: {}".format(args.pretrained_disp), fontsize=6.5);
         plt.xlim(0, 832-1); plt.ylim(256-1, 0);
         fig.add_subplot(gs[0, 2:4])
+        d_ref = scale_array(d_ref.numpy(), scale_factor)
         plt.imshow(d_ref, cmap='turbo', vmax=14); plt.text(text_xy[0], text_xy[1], "$D_{t}$", fontdict=text_fd);
         plt.xticks([]) and plt.yticks([]) if args.save_fig else plt.grid(linestyle=':', linewidth=0.4) 
         plt.xlim(0, 832-1); plt.ylim(256-1, 0);
         fig.add_subplot(gs[1, 0:2])
+        tgt_masked = scale_array(tgt_masked, scale_factor)
         plt.imshow(tgt_masked, vmax=1); plt.text(text_xy[0], text_xy[1], "$I_{t+1}$", fontdict=text_fd);
         plt.xticks([]) and plt.yticks([]) if args.save_fig else plt.grid(linestyle=':', linewidth=0.4) 
         plt.xlim(0, 832-1); plt.ylim(256-1, 0);
         fig.add_subplot(gs[1, 2:4])
+        d_tgt = scale_array(d_tgt.numpy(), scale_factor)
         plt.imshow(d_tgt, cmap='turbo', vmax=14); plt.text(text_xy[0], text_xy[1], "$D_{t+1}$", fontdict=text_fd);
         plt.xticks([]) and plt.yticks([]) if args.save_fig else plt.grid(linestyle=':', linewidth=0.4) 
         plt.xlim(0, 832-1); plt.ylim(256-1, 0);
         fig.add_subplot(gs[2, 0:2])
+        r2t_obj = scale_array(r2t_obj, scale_factor)
         plt.imshow(r2t_obj, vmax=1); plt.text(text_xy[0], text_xy[1], "Ego-warped objects with motion", fontdict=text_fd, size=10);
         plt.xticks([]) and plt.yticks([]) if args.save_fig else plt.grid(linestyle=':', linewidth=0.4)
         plt.text(130, 250, "*ego speed {:0.4f},  6-DoF {}".format(float(ego_pose[0,:3].pow(2).sum().sqrt()), ego_pose[0].detach().cpu().numpy().round(4)), fontsize=7, bbox=bbox_b, ha='left', va='bottom');
@@ -520,10 +583,12 @@ def demo_visualize(args, demo_loader, disp_net, ego_pose_net, obj_pose_net):
         if num_inst > 3: plt.text(r2t_obj_tail[3,0]-30, r2t_obj_tail[3,1]+25, "4: {:0.4f}".format(float(obj_pose[3,:3].pow(2).sum().sqrt())), fontsize=7, bbox=bbox_l);
         plt.xlim(0, 832-1); plt.ylim(256-1, 0);
         fig.add_subplot(gs[3, 0:2])
+        i_w_occ = scale_array(i_w_occ, scale_factor)
         plt.imshow(i_w_occ, vmax=1); plt.text(text_xy[0], text_xy[1], "Final synthesis (yellow: dis/occlusion)", fontdict=text_fd, size=10);
         plt.xticks([]) and plt.yticks([]) if args.save_fig else plt.grid(linestyle=':', linewidth=0.4) 
         plt.xlim(0, 832-1); plt.ylim(256-1, 0);
         fig.add_subplot(gs[4, 0:2])
+        tgt_diff = scale_array(tgt_diff, scale_factor)
         plt.imshow(tgt_diff, cmap='bone', vmax=0.5); plt.text(text_xy[0], text_xy[1], "$I_{diff}$", fontdict=text_fd);
         plt.xticks([]) and plt.yticks([]) if args.save_fig else plt.grid(linestyle=':', linewidth=0.4) 
         plt.xlim(0, 832-1); plt.ylim(256-1, 0);
@@ -613,8 +678,6 @@ def demo_visualize(args, demo_loader, disp_net, ego_pose_net, obj_pose_net):
         vidx += 1
 
     return 0
-
-
 
 def load_as_float(path):
     return imread(path).astype(np.float32)
