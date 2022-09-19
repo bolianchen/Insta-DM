@@ -158,7 +158,7 @@ def compute_smooth_loss(tgt_depth, tgt_img, ref_depths, ref_imgs):
 
 
 
-def compute_obj_size_constraint_loss(height_prior, tgtD, tgtMs, refDs, refMs, intrinsics, mni, num_insts):
+def compute_obj_size_constraint_loss(height_prior, tgtD, tgtMs, refDs, refMs, intrinsics, mni, num_insts, eps=1e-9):
     '''
         Reference: Struct2Depth (AAAI'19), https://github.com/tensorflow/models/blob/archive/research/struct2depth/model.py
         args:
@@ -177,12 +177,27 @@ def compute_obj_size_constraint_loss(height_prior, tgtD, tgtMs, refDs, refMs, in
             ### tgt-frame ###
             tgtD_rep = tgtD.repeat_interleave(mni, dim=0)
             tgtD_avg = tgtD_rep.mean(dim=[1,2,3])
+
+            # ignore the dummy mask and reshape it to match with tgtD_rep
             tgtM_rep = tgtM[:,1:].reshape(-1,1,hh,ww)
+
+            # depths of all the objects
             tgtD_obj = (tgtD_rep * tgtM_rep).sum(dim=[1,2,3]) / tgtM_rep.sum(dim=[1,2,3]).clamp(min=1e-9)
+
+            # return ([entries of coordinate0], [entries of coordinate1],
+            #         [entries of coordinate2], [entries of coordinate3])
             tgtM_idx = np.where(tgtM_rep.detach().cpu().numpy()==1)
+
+            # heights of all the objects in the image
+            # for each object, substract its minimum y coordinates
+            # from the maximum
             tgtH_obj = torch.tensor([ tgtM_idx[2][tgtM_idx[0]==obj].max() - tgtM_idx[2][tgtM_idx[0]==obj].min() if (tgtM_idx[0]==obj).sum()!=0 else 0 for obj in range(tgtM_rep.size(0)) ]).type_as(tgtD)
 
             tgt_val = (tgtD_obj > 0) * (tgtH_obj > 0)
+
+            # return earlier when no objects with effective depths and heights
+            if not torch.any(tgt_val):
+                return loss
             
             tgt_fy = fy_rep[tgt_val]
             tgtD_avg = tgtD_avg[tgt_val].detach()   # d_avg.detach() to prevent increasing depth in the sky.
@@ -193,7 +208,6 @@ def compute_obj_size_constraint_loss(height_prior, tgtD, tgtMs, refDs, refMs, in
 
             loss_tgt = torch.abs( (tgtD_obj-tgtD_app)/tgtD_avg ).sum() / torch.abs( (tgtD_obj-tgtD_app)/tgtD_avg ).size(0)
             
-
             ### ref-frame ###
             refD_rep = refD.repeat_interleave(mni, dim=0)
             refD_avg = refD_rep.mean(dim=[1,2,3])
@@ -203,6 +217,11 @@ def compute_obj_size_constraint_loss(height_prior, tgtD, tgtMs, refDs, refMs, in
             refH_obj = torch.tensor([ refM_idx[2][refM_idx[0]==obj].max() - refM_idx[2][refM_idx[0]==obj].min() if (refM_idx[0]==obj).sum()!=0 else 0 for obj in range(refM_rep.size(0)) ]).type_as(refD)
 
             ref_val = (refD_obj > 0) * (refH_obj > 0)
+
+            # return earlier when no objects with effective depths and heights
+            if not torch.any(ref_val):
+                loss += loss_tgt
+                return loss
             
             ref_fy = fy_rep[ref_val]
             refD_avg = refD_avg[ref_val].detach()   # d_avg.detach() to prevent increasing depth in the sky.
@@ -216,8 +235,6 @@ def compute_obj_size_constraint_loss(height_prior, tgtD, tgtMs, refDs, refMs, in
             loss += 1/2 * (loss_tgt + loss_ref)
 
     return loss
-
-
 
 def compute_mof_consistency_loss(tgt_mofs, ref_mofs, r2t_flows, t2r_flows, r2t_diffs, t2r_diffs, r2t_vals, t2r_vals, alpha=10, thresh=0.1):
     '''
