@@ -54,3 +54,16 @@ CUDA_VISIBLE_DEVICES=0 python train.py $FOLDER_TO_SAVE_DATA \
         --epoch-size 1000 --with-ssim --with-mask --with-auto-mask \
         --name $MODEL_NAME  # models would be saved in checkpoints/$MODEL_NAME within the project folder
 ```
+
+## Inference
+```
+CUDA_VISIBLE_DEVICES=1 python demo.py \
+        --data $DATA_DIR \ # path to a folder containing images, optical flows, and segmentation masks
+        --pretrained-disp $PRETRAINED/best/dispnet_model_best.pth.tar \
+        --pretrained-ego-pose $PRETRAINED/best/ego_pose_model_best.pth.tar \
+        --pretrained-obj-pose $PRETRAINED/best/obj_pose_model_best.pth.tar \
+        --data_file_structure 'custom' \
+        --mni 1 \
+        --name NAME_TO_SAVE \ # name of the folder to save in outputs
+        --save-fig \
+```
