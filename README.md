@@ -57,7 +57,7 @@ CUDA_VISIBLE_DEVICES=0 python train.py $FOLDER_TO_SAVE_DATA \
 
 ## Inference
 ```
-CUDA_VISIBLE_DEVICES=1 python demo.py \
+CUDA_VISIBLE_DEVICES=0 python demo.py \
         --data $DATA_DIR \ # path to a folder containing images, optical flows, and segmentation masks
         --pretrained-disp $PRETRAINED/best/dispnet_model_best.pth.tar \
         --pretrained-ego-pose $PRETRAINED/best/ego_pose_model_best.pth.tar \
