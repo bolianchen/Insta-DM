@@ -9,15 +9,12 @@ import torch
 import torch.nn as nn
 from torch.autograd import Variable
 import os
+from pathlib import Path
 os.environ['PYTHON_EGG_CACHE'] = 'tmp/' # a writable directory 
 import sys
-sys.path.insert(0, '/home/bryanchen/Coding/Projects/PWC-Net/PyTorch'\
-                   '/external_packages/correlation-pytorch-master'\
-                   '/correlation-pytorch/correlation_package')
-#from correlation_package.modules.corr import Correlation 
+sys.path.insert(0, str(Path(__file__).parent.parent/'correlation_package'))
 from correlation import Correlation
 import numpy as np
-
 
 __all__ = [
     'pwc_dc_net', 'pwc_dc_net_old'
