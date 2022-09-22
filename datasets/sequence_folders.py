@@ -20,6 +20,7 @@ import math
 from matplotlib import pyplot as plt
 from flow_io import flow_read
 from rigid_warp import flow_warp
+from utils import load_intrinsics
 import pdb
 
 
@@ -152,17 +153,6 @@ def convert_file_img_paths(root_dir, filename, ext='.png'):
         img_paths.append(img_path)
     return img_paths
 
-def load_intrinsics(folder, frame_index):
-    """Load 3x3 camera intrinsics from a text file
-    
-    There are 9 entries in the same line separated by comma
-    """
-    intrinsics_file = os.path.join(folder, frame_index + '_cam.txt')
-    f = open(intrinsics_file, 'r') 
-    arr = np.array([ [float(e) for e in l.split(',')] for l in f.readlines() ])
-    arr = arr.reshape(3,3)
-    return arr.astype(np.float32)
-
 class SequenceFolder(data.Dataset):
     """
     A sequence data loader where the files are arranged in this way:
@@ -180,7 +170,7 @@ class SequenceFolder(data.Dataset):
     def __init__(self, root, file_structure, train, seed=None, shuffle=True,
             max_num_instances=20, sequence_length=3, transform=None,
             proportion=1, begin_idx=None, path_to_swap='', swap_imgs=False,
-            swap_segmentations=False, swap_flows=False, custom_img_ext='png'):
+            swap_segmentations=False, swap_flows=False, custom_img_ext='jpg'):
         
         np.random.seed(seed)
         random.seed(seed)
